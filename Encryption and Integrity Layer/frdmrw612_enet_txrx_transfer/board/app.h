@@ -20,11 +20,11 @@
 extern phy_ksz8081_resource_t g_phy_resource;
 #define EXAMPLE_ENET ENET
 /* Address of PHY interface. */
-#define EXAMPLE_PHY_ADDRESS 0x02U
+#define PHY_ADDRESS 0x02U
 
 /* PHY operations. */
-#define EXAMPLE_PHY_OPS      &phyksz8081_ops
-#define EXAMPLE_PHY_RESOURCE &g_phy_resource
+#define PHY_OPS      &phyksz8081_ops
+#define PHY_RESOURCE &g_phy_resource
 
 /* ENET clock frequency. */
 #define EXAMPLE_CLOCK_FREQ CLOCK_GetMainClkFreq()
