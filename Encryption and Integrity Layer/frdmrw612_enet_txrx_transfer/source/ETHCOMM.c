@@ -10,6 +10,7 @@
 #include "fsl_silicon_id.h"
 #include "app.h"
 #include "fsl_crc.h"
+#include "aes.h"
 #include "ETHCOMM_CFG.h"
 
 #include "fsl_debug_console.h"
@@ -111,6 +112,38 @@ static void ETHCOMM_vInitPHY(void)
 	} while (!(link && autonego));
 }
 
+static uint16_t ETHCOM_u16PKCS7Padding(uint8_t* pu8Buffer, uint8_t* pu8PaddedBuff, uint16_t u16DataLength)
+{
+	uint16_t u16PaddedLength = 0U;
+	uint16_t u16PadSize = 0U;
+	uint16_t u16i;
+
+	u16PadSize = AES_BLOCKLEN - (u16DataLength % AES_BLOCKLEN);
+
+	if(u16PadSize != 0)
+	{
+		u16PaddedLength = u16DataLength + u16PadSize;
+		memcpy(pu8PaddedBuff, pu8Buffer, u16DataLength);
+
+		for(u16i = u16DataLength; u16i <= u16PaddedLength; u16i++)
+		{
+			pu8PaddedBuff[u16i] = u16PadSize;
+		}
+	}
+	else
+	{
+		u16PaddedLength = u16DataLength + AES_BLOCKLEN;
+		memcpy(pu8PaddedBuff, pu8Buffer, u16DataLength);
+
+		for(u16i = u16DataLength; u16i <= u16PaddedLength; u16i++)
+		{
+			pu8PaddedBuff[u16i] = AES_BLOCKLEN;
+		}
+	}
+
+	return u16PaddedLength;
+}
+
 static void ETHCOMM_vInitCrc32(void)
 {
     crc_config_t config;
@@ -175,32 +208,39 @@ void ETHCOMM_vInit(void)
     ENET_ActiveRead(EXAMPLE_ENET);
 }
 
-void ETHCOMM_vMsgSend(uint8_t* pu8Buffer, uint32_t u32DataLength)
+void ETHCOMM_vMsgSend(uint8_t* pu8Buffer, uint16_t u16DataLength)
 {
+	struct AES_ctx ctx;
+	uint8_t key[16] = ETHCOMM_ENCRYPT_KEY;
+	uint8_t iv[16] = ETHCOMM_ENCRYPT_IV;
+	uint32_t u32CRC = 0;
+	uint16_t u16MsgLenght = 0;
+	bool link = false;
+
 	tstEthMsg stMsgInfo = {
 			.MACdst = ETHCOM_MAC_ADDRESS_DEST,
 			.MACsrc = ETHCOM_MAC_ADDRESS_SRC,
 	};
 
-	uint32_t u32CRC = 0;
-	bool link = false;
+	/* Calculo de padding #PKCS7 para la encriptacion del mensaje */
+	u16MsgLenght = ETHCOM_u16PKCS7Padding(pu8Buffer, stMsgInfo.DataBuffer, u16DataLength);
 
-	/*Encriptacion del mensaje*/
+	/* Encriptacion del mensaje */
+	AES_init_ctx_iv(&ctx, key, iv);
+	AES_CBC_encrypt_buffer(&ctx, stMsgInfo.DataBuffer, u16MsgLenght);
 
-	/*Calculo del CRC*/
+	/* Calculo del CRC */
     ETHCOMM_vInitCrc32();
-	CRC_WriteData(CRC_base, pu8Buffer, u32DataLength);
+	CRC_WriteData(CRC_base, stMsgInfo.DataBuffer, u16MsgLenght);
 	u32CRC = CRC_Get32bitResult(CRC_base);
 
-	/*Llenado del mensaje*/
-	stMsgInfo.DataLenght = SWAP16(u32DataLength + ETHCOMM_CRC32_DATA_SIZE);
-	memcpy(&stMsgInfo.DataBuffer[0], pu8Buffer, u32DataLength);
-	memcpy(&stMsgInfo.DataBuffer[u32DataLength], (uint8_t*)&u32CRC, ETHCOMM_CRC32_DATA_SIZE);
+	stMsgInfo.DataLenght = SWAP16(u16MsgLenght + ETHCOMM_CRC32_DATA_SIZE);
+	memcpy(&stMsgInfo.DataBuffer[u16MsgLenght], (uint8_t*)&u32CRC, ETHCOMM_CRC32_DATA_SIZE);
 
 	PHY_GetLinkStatus(&phyHandle, &link);
 	if(link)
 	{
-		ENET_SendFrame(EXAMPLE_ENET, &g_handle, (uint8_t*)&stMsgInfo, u32DataLength + ETHCOMM_HEADER_MSG_SIZE, 0, false, NULL);
+		ENET_SendFrame(EXAMPLE_ENET, &g_handle, (uint8_t*)&stMsgInfo, u16MsgLenght + ETHCOMM_HEADER_MSG_SIZE, 0, false, NULL);
 	}
 }
 
