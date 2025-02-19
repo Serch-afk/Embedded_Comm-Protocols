@@ -9,6 +9,8 @@
 #include "fsl_phy.h"
 #include "fsl_silicon_id.h"
 #include "app.h"
+#include "fsl_crc.h"
+#include "ETHCOMM_CFG.h"
 
 #include "fsl_debug_console.h"
 /*******************************************************************************
@@ -21,14 +23,27 @@
 #define ENET_DATA_LENGTH       (1000)
 #define ENET_TRANSMIT_DATA_NUM (20)
 
-#define APP_ENET_BUFF_ALIGNMENT ENET_BUFF_ALIGNMENT
+#define ETHCOMM_CRC32_DATA_SIZE (4)
+#define ETHCOMM_MAC_DATA_SIZE   (6)
+#define ETHCOMM_HEADER_MSG_SIZE (14 + ETHCOMM_CRC32_DATA_SIZE)
 
+#define APP_ENET_BUFF_ALIGNMENT ENET_BUFF_ALIGNMENT
 #define PHY_AUTONEGO_TIMEOUT_COUNT (300000)
 
-#define MAC_ADDRESS                        \
-    {                                      \
-        0x54, 0x27, 0x8d, 0x00, 0x00, 0x00 \
-    }
+#define SWAP16(value) (((value >> 8) & 0x00FF) | \
+                       ((value << 8) & 0xFF00))
+
+/*******************************************************************************
+ * Data Types
+ ******************************************************************************/
+typedef struct
+{
+	uint8_t MACdst[ETHCOMM_MAC_DATA_SIZE];
+	uint8_t MACsrc[ETHCOMM_MAC_DATA_SIZE];
+	uint16_t DataLenght;
+	uint8_t DataBuffer[ENET_DATA_LENGTH];
+}tstEthMsg;
+
 /*******************************************************************************
  * Variables
  ******************************************************************************/
@@ -47,13 +62,10 @@ SDK_ALIGN(uint8_t g_txDataBuff[ENET_TXBD_NUM][SDK_SIZEALIGN(ENET_TXBUFF_SIZE, AP
 
 /*! @brief MAC transfer. */
 static enet_handle_t g_handle;
-static uint8_t g_frame[ENET_DATA_LENGTH + 14];
-
-/*! @brief The MAC address for ENET device. */
-uint8_t g_macAddr[6] = MAC_ADDRESS;
-
 /*! @brief PHY status. */
 static phy_handle_t phyHandle;
+static CRC_Type *CRC_base = CRC_ENGINE;
+
 /*******************************************************************************
  * Private functions
  ******************************************************************************/
@@ -99,24 +111,18 @@ static void ETHCOMM_vInitPHY(void)
 	} while (!(link && autonego));
 }
 
-/*! @brief Build Frame for transmit. */
-static void ETHCOMM_vBuildBroadCastFrame(void)
+static void ETHCOMM_vInitCrc32(void)
 {
-    uint32_t count  = 0;
-    uint32_t length = ENET_DATA_LENGTH - 14;
+    crc_config_t config;
 
-    for (count = 0; count < 6U; count++)
-    {
-        g_frame[count] = 0xFFU;
-    }
-    memcpy(&g_frame[6], &g_macAddr[0], 6U);
-    g_frame[12] = (length >> 8) & 0xFFU;
-    g_frame[13] = length & 0xFFU;
+    config.polynomial    = kCRC_Polynomial_CRC_32;
+    config.reverseIn     = true;
+    config.complementIn  = false;
+    config.reverseOut    = true;
+    config.complementOut = true;
+    config.seed          = 0xFFFFFFFFU;
 
-    for (count = 0; count < length; count++)
-    {
-        g_frame[count + 14] = count % 0xFFU;
-    }
+    CRC_Init(CRC_base, &config);
 }
 
 /*******************************************************************************
@@ -127,6 +133,7 @@ void ETHCOMM_vInit(void)
     enet_config_t config;
     phy_speed_t speed;
     phy_duplex_t duplex;
+    uint8_t g_macAddr[ETHCOMM_MAC_DATA_SIZE] = ETHCOM_MAC_ADDRESS_SRC;
 
     /* Prepare the buffer configuration. */
     enet_buffer_config_t buffConfig[] = {{
@@ -163,13 +170,47 @@ void ETHCOMM_vInit(void)
     config.miiSpeed  = (enet_mii_speed_t)speed;
     config.miiDuplex = (enet_mii_duplex_t)duplex;
 
-    /* Set special address for each chip. */
-    SILICONID_ConvertToMacAddr(&g_macAddr);
-
     /* Init the ENET. */
     ENET_Init(EXAMPLE_ENET, &g_handle, &config, &buffConfig[0], &g_macAddr[0], EXAMPLE_CLOCK_FREQ);
     ENET_ActiveRead(EXAMPLE_ENET);
-
-    /* Build broadcast for sending. */
-    ETHCOMM_vBuildBroadCastFrame();
 }
+
+void ETHCOMM_vMsgSend(uint8_t* pu8Buffer, uint32_t u32DataLength)
+{
+	tstEthMsg stMsgInfo = {
+			.MACdst = ETHCOM_MAC_ADDRESS_DEST,
+			.MACsrc = ETHCOM_MAC_ADDRESS_SRC,
+	};
+
+	uint32_t u32CRC = 0;
+	bool link = false;
+
+	/*Encriptacion del mensaje*/
+
+	/*Calculo del CRC*/
+    ETHCOMM_vInitCrc32();
+	CRC_WriteData(CRC_base, pu8Buffer, u32DataLength);
+	u32CRC = CRC_Get32bitResult(CRC_base);
+
+	/*Llenado del mensaje*/
+	stMsgInfo.DataLenght = SWAP16(u32DataLength + ETHCOMM_CRC32_DATA_SIZE);
+	memcpy(&stMsgInfo.DataBuffer[0], pu8Buffer, u32DataLength);
+	memcpy(&stMsgInfo.DataBuffer[u32DataLength], (uint8_t*)&u32CRC, ETHCOMM_CRC32_DATA_SIZE);
+
+	PHY_GetLinkStatus(&phyHandle, &link);
+	if(link)
+	{
+		ENET_SendFrame(EXAMPLE_ENET, &g_handle, (uint8_t*)&stMsgInfo, u32DataLength + ETHCOMM_HEADER_MSG_SIZE, 0, false, NULL);
+	}
+}
+
+
+
+
+
+
+
+
+
+
+
