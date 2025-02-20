@@ -24,9 +24,12 @@
 #define ENET_DATA_LENGTH       (1000)
 #define ENET_TRANSMIT_DATA_NUM (20)
 
-#define ETHCOMM_CRC32_DATA_SIZE (4)
-#define ETHCOMM_MAC_DATA_SIZE   (6)
+#define ETHCOMM_CRC32_DATA_SIZE     (4)
+#define ETHCOMM_MAC_DATA_SIZE       (6)
 #define ETHCOMM_HEADER_MSG_SIZE (14 + ETHCOMM_CRC32_DATA_SIZE)
+
+#define ETHCOMM_DATA_LENGHT_INDEX   (12)
+#define ETHCOMM_DATA_BUFFER_INDEX   (14)
 
 #define APP_ENET_BUFF_ALIGNMENT ENET_BUFF_ALIGNMENT
 #define PHY_AUTONEGO_TIMEOUT_COUNT (300000)
@@ -66,6 +69,9 @@ static enet_handle_t g_handle;
 /*! @brief PHY status. */
 static phy_handle_t phyHandle;
 static CRC_Type *CRC_base = CRC_ENGINE;
+
+static uint8_t key[16] = ETHCOMM_ENCRYPT_KEY;
+static uint8_t iv[16] = ETHCOMM_ENCRYPT_IV;
 
 /*******************************************************************************
  * Private functions
@@ -158,6 +164,29 @@ static void ETHCOMM_vInitCrc32(void)
     CRC_Init(CRC_base, &config);
 }
 
+static bool ETHCOMM_CheckCRC(uint8_t* pu8Buffer, uint16_t u16MsgLenght)
+{
+	bool Status = false;
+	uint32_t MsgCRC = 0;
+	uint32_t CalCRC = 0;
+
+	/* Se obtiene el CRC del mensaje */
+	memcpy((uint8_t*)&MsgCRC, &pu8Buffer[u16MsgLenght], ETHCOMM_CRC32_DATA_SIZE);
+
+	/* Se calcula el CRC*/
+	ETHCOMM_vInitCrc32();
+	CRC_WriteData(CRC_base, pu8Buffer, u16MsgLenght);
+	CalCRC = CRC_Get32bitResult(CRC_base);
+
+	/*Se comparan los CRC*/
+	if(MsgCRC == CalCRC)
+	{
+		Status = true;
+	}
+
+	return Status;
+}
+
 /*******************************************************************************
  * Global functions
  ******************************************************************************/
@@ -203,6 +232,9 @@ void ETHCOMM_vInit(void)
     config.miiSpeed  = (enet_mii_speed_t)speed;
     config.miiDuplex = (enet_mii_duplex_t)duplex;
 
+    /*Reject broadcast msg*/
+    config.macSpecialConfig = kENET_ControlRxBroadCastRejectEnable;
+
     /* Init the ENET. */
     ENET_Init(EXAMPLE_ENET, &g_handle, &config, &buffConfig[0], &g_macAddr[0], EXAMPLE_CLOCK_FREQ);
     ENET_ActiveRead(EXAMPLE_ENET);
@@ -211,8 +243,6 @@ void ETHCOMM_vInit(void)
 void ETHCOMM_vMsgSend(uint8_t* pu8Buffer, uint16_t u16DataLength)
 {
 	struct AES_ctx ctx;
-	uint8_t key[16] = ETHCOMM_ENCRYPT_KEY;
-	uint8_t iv[16] = ETHCOMM_ENCRYPT_IV;
 	uint32_t u32CRC = 0;
 	uint16_t u16MsgLenght = 0;
 	bool link = false;
@@ -242,6 +272,55 @@ void ETHCOMM_vMsgSend(uint8_t* pu8Buffer, uint16_t u16DataLength)
 	{
 		ENET_SendFrame(EXAMPLE_ENET, &g_handle, (uint8_t*)&stMsgInfo, u16MsgLenght + ETHCOMM_HEADER_MSG_SIZE, 0, false, NULL);
 	}
+}
+
+bool ETHCOMM_MsgReceive(uint8_t* pu8MsgBuffer)
+{
+	enet_data_error_stats_t eErrStatic;
+	uint32_t length = 0;
+	status_t status;
+	uint16_t MsgLenght;
+	bool CRC_check = false;
+	struct AES_ctx ctx;
+
+	/* Get the Frame size */
+	status = ENET_GetRxFrameSize(&g_handle, &length, 0);
+	/* Call ENET_ReadFrame when there is a received frame. */
+	if (length != 0)
+	{
+		/* Received valid frame. Deliver the rx buffer with the size equal to length. */
+		uint8_t *data = (uint8_t *)malloc(length);
+		status = ENET_ReadFrame(EXAMPLE_ENET, &g_handle, data, length, 0, NULL);
+		if (status == kStatus_Success)
+		{
+			/*Get data lenght*/
+			memcpy((uint8_t*)&MsgLenght, &data[ETHCOMM_DATA_LENGHT_INDEX], sizeof(MsgLenght));
+			MsgLenght = SWAP16(MsgLenght) - ETHCOMM_CRC32_DATA_SIZE;
+
+			/*CRC Check*/
+			CRC_check = ETHCOMM_CheckCRC(&data[ETHCOMM_DATA_BUFFER_INDEX], (uint16_t)MsgLenght);
+			if(CRC_check == true)
+			{
+				memcpy(pu8MsgBuffer, &data[ETHCOMM_DATA_BUFFER_INDEX], MsgLenght);
+
+				/*Decrypt Msg*/
+				AES_init_ctx_iv(&ctx, key, iv);
+				AES_CBC_decrypt_buffer(&ctx, pu8MsgBuffer, MsgLenght);
+			}
+		}
+
+		free(data);
+	}
+	else if (status == kStatus_ENET_RxFrameError)
+	{
+		/* Update the received buffer when error happened. */
+		/* Get the error information of the received g_frame. */
+		ENET_GetRxErrBeforeReadFrame(&g_handle, &eErrStatic, 0);
+		/* update the receive buffer. */
+		ENET_ReadFrame(EXAMPLE_ENET, &g_handle, NULL, 0, 0, NULL);
+	}
+
+	return CRC_check;
 }
 
 

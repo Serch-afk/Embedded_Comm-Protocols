@@ -14,5 +14,6 @@
  ******************************************************************************/
 extern void ETHCOMM_vInit(void);
 extern void ETHCOMM_vMsgSend(uint8_t* pu8Buffer, uint32_t u32DataLength);
+extern bool ETHCOMM_MsgReceive(uint8_t* pu8MsgBuffer);
 
 #endif /* ETHCOMM_H_ */
