@@ -150,6 +150,34 @@ static uint16_t ETHCOM_u16PKCS7Padding(uint8_t* pu8Buffer, uint8_t* pu8PaddedBuf
 	return u16PaddedLength;
 }
 
+static uint16_t ETHCOM_u16PKCS7Unpad(uint8_t* pu8PaddedBuff, uint16_t u16DataLength)
+{
+	uint16_t u16PadPos = u16DataLength - 1;
+	uint16_t u16PadValue = 0U;
+	uint16_t u16UnpadLenght = 0U;
+	bool Status = true;
+
+	u16PadValue = pu8PaddedBuff[u16PadPos];
+	if(u16PadValue != 0)
+	{
+		for (size_t i = 0; i < u16PadValue; i++)
+		{
+			if (pu8PaddedBuff[u16PadPos - i] != u16PadValue)
+			{
+				PRINTF("Padding incorrecto.\r\n");
+				Status = false;
+			}
+		}
+		if(Status)
+		{
+			u16UnpadLenght = u16DataLength - u16PadValue;
+			memset(&pu8PaddedBuff[u16UnpadLenght], 0, u16PadValue);
+		}
+	}
+
+	return u16UnpadLenght;
+}
+
 static void ETHCOMM_vInitCrc32(void)
 {
     crc_config_t config;
@@ -274,12 +302,13 @@ void ETHCOMM_vMsgSend(uint8_t* pu8Buffer, uint16_t u16DataLength)
 	}
 }
 
-bool ETHCOMM_MsgReceive(uint8_t* pu8MsgBuffer)
+uint16_t ETHCOMM_u16MsgReceive(uint8_t* pu8MsgBuffer)
 {
 	enet_data_error_stats_t eErrStatic;
 	uint32_t length = 0;
 	status_t status;
-	uint16_t MsgLenght;
+	uint16_t MsgLenght = 0;
+	uint16_t UnpadLenght = 0;
 	bool CRC_check = false;
 	struct AES_ctx ctx;
 
@@ -301,11 +330,19 @@ bool ETHCOMM_MsgReceive(uint8_t* pu8MsgBuffer)
 			CRC_check = ETHCOMM_CheckCRC(&data[ETHCOMM_DATA_BUFFER_INDEX], (uint16_t)MsgLenght);
 			if(CRC_check == true)
 			{
-				memcpy(pu8MsgBuffer, &data[ETHCOMM_DATA_BUFFER_INDEX], MsgLenght);
-
 				/*Decrypt Msg*/
 				AES_init_ctx_iv(&ctx, key, iv);
-				AES_CBC_decrypt_buffer(&ctx, pu8MsgBuffer, MsgLenght);
+				AES_CBC_decrypt_buffer(&ctx, &data[ETHCOMM_DATA_BUFFER_INDEX], MsgLenght);
+
+				UnpadLenght = ETHCOM_u16PKCS7Unpad(&data[ETHCOMM_DATA_BUFFER_INDEX], MsgLenght);
+				if(UnpadLenght > 0)
+				{
+					memcpy(pu8MsgBuffer, &data[ETHCOMM_DATA_BUFFER_INDEX], UnpadLenght);
+				}
+			}
+			else
+			{
+				PRINTF("CRC incorrecto.\r\n");
 			}
 		}
 
@@ -320,7 +357,7 @@ bool ETHCOMM_MsgReceive(uint8_t* pu8MsgBuffer)
 		ENET_ReadFrame(EXAMPLE_ENET, &g_handle, NULL, 0, 0, NULL);
 	}
 
-	return CRC_check;
+	return UnpadLenght;
 }
 
 
